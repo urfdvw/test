@@ -28,12 +28,22 @@
             font-size: 24px;
             margin-bottom: 10px;
         }
+        #restartBtn {
+            display: none;
+            background: #333;
+            color: #fff;
+            border: none;
+            padding: 10px 20px;
+            margin-top: 10px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
     <div class="score">Score: <span id="score">0</span></div>
     <canvas id="gameCanvas" width="800" height="600"></canvas>
-    <button id="restartBtn" style="display:none; background:#333; color:#fff; border:none; padding:10px 20px; margin-top:10px; border-radius:5px; cursor:pointer;">Restart</button>
+    <button id="restartBtn">Restart</button>
 
     <script>
         const canvas = document.getElementById('gameCanvas');
@@ -41,7 +51,25 @@
         const scoreElement = document.getElementById('score');
         const restartBtn = document.getElementById('restartBtn');
 
-        // Game variables
+        if (!canvas || !ctx || !scoreElement || !restartBtn) {
+            throw new Error('Required DOM elements not found');
+        }
+
+        // Game constants
+        const PLAYER_SPEED = 5;
+        const BULLET_SPEED = 5;
+        const SHOOT_COOLDOWN = 200;
+        const BASE_HEIGHT = 30;
+        const BASE_SECTIONS = 10;
+        const BASE_ENEMY_SPEED = 2;
+        const ENEMY_SPEED_SCALE = 0.005;
+        const MAX_ENEMY_SPEED = 5;
+        const BASE_SPAWN_RATE = 0.02;
+        const SPAWN_RATE_SCALE = 0.0001;
+        const MAX_SPAWN_RATE = 0.1;
+        const SCORE_PER_KILL = 10;
+
+        // Game state
         let player = { x: canvas.width / 2 - 25, y: canvas.height - 60, width: 50, height: 50 };
         let bullets = [];
         let enemies = [];
@@ -50,10 +78,9 @@
         let keys = {};
         let isShooting = false;
         let lastShot = 0;
-        let shootCooldown = 200; // milliseconds
-        let baseHeight = 30;
-        let baseHealth = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]; // health for 10 sections
-        let baseAnimation = 0; // for animation
+        let baseHealth = new Array(BASE_SECTIONS).fill(1);
+        let baseAnimation = 0;
+        let animationFrameId = null;
 
         // Restart function
         function restartGame() {
@@ -63,8 +90,11 @@
             score = 0;
             scoreElement.textContent = score;
             gameOver = false;
-            baseHealth = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+            baseHealth = new Array(BASE_SECTIONS).fill(1);
             restartBtn.style.display = 'none';
+            if (animationFrameId !== null) {
+                cancelAnimationFrame(animationFrameId);
+            }
             gameLoop();
         }
 
@@ -81,6 +111,7 @@
         // Touch events on canvas
         canvas.addEventListener('touchstart', (e) => {
             e.preventDefault();
+            if (e.touches.length === 0) return;
             let rect = canvas.getBoundingClientRect();
             let touchX = e.touches[0].clientX - rect.left;
             player.x = touchX - player.width / 2;
@@ -91,6 +122,7 @@
 
         canvas.addEventListener('touchmove', (e) => {
             e.preventDefault();
+            if (e.touches.length === 0) return;
             let rect = canvas.getBoundingClientRect();
             let touchX = e.touches[0].clientX - rect.left;
             player.x = touchX - player.width / 2;
@@ -124,21 +156,21 @@
         }
 
         function drawBase() {
-            let baseY = canvas.height - baseHeight;
-            let sectionWidth = (canvas.width - 20) / 10; // 10 pixel gaps total for 10 sections
+            let baseY = canvas.height - BASE_HEIGHT;
+            let sectionWidth = (canvas.width - 20) / BASE_SECTIONS;
             let gap = 10;
             ctx.fillStyle = '#0f0';
-            for (let s = 0; s < 10; s++) {
-                let sectionX = s * (sectionWidth + gap / 9) + (s > 0 ? gap / 9 : 0); // Adjust gap distribution
+            for (let s = 0; s < BASE_SECTIONS; s++) {
+                let sectionX = s * (sectionWidth + gap / 9) + (s > 0 ? gap / 9 : 0);
                 if (baseHealth[s] > 0) {
-                    ctx.fillRect(sectionX, baseY, sectionWidth, baseHeight);
+                    ctx.fillRect(sectionX, baseY, sectionWidth, BASE_HEIGHT);
                 }
             }
             // Simple animation: flash the top
             baseAnimation++;
             if (baseAnimation % 20 < 10 && baseHealth.some(h => h > 0)) {
                 ctx.fillStyle = '#fff';
-                for (let s = 0; s < 10; s++) {
+                for (let s = 0; s < BASE_SECTIONS; s++) {
                     let sectionX = s * (sectionWidth + gap / 9) + (s > 0 ? gap / 9 : 0);
                     if (baseHealth[s] > 0) {
                         ctx.fillRect(sectionX, baseY, sectionWidth, 2);
@@ -149,65 +181,69 @@
 
         function updatePlayer() {
             if (keys['ArrowLeft'] && player.x > 0) {
-                player.x -= 5;
+                player.x -= PLAYER_SPEED;
             }
             if (keys['ArrowRight'] && player.x < canvas.width - player.width) {
-                player.x += 5;
+                player.x += PLAYER_SPEED;
             }
         }
 
         function updateBullets() {
-            bullets.forEach((bullet, index) => {
-                bullet.y -= 5;
-                if (bullet.y < 0) {
-                    bullets.splice(index, 1);
-                }
+            // Use filter to avoid mutating array during iteration
+            bullets = bullets.filter(bullet => {
+                bullet.y -= BULLET_SPEED;
+                return bullet.y >= 0;
             });
         }
 
         function updateEnemies() {
-            let enemySpeed = 2 + score * 0.005; // Increase speed with score
-            enemySpeed = Math.min(enemySpeed, 5); // Cap at 5
-            enemies.forEach((enemy, index) => {
+            let enemySpeed = Math.min(BASE_ENEMY_SPEED + score * ENEMY_SPEED_SCALE, MAX_ENEMY_SPEED);
+            let sectionWidth = (canvas.width - 20) / BASE_SECTIONS;
+
+            // Use filter to avoid mutating array during iteration
+            enemies = enemies.filter(enemy => {
                 enemy.y += enemySpeed;
-                if (enemy.y + enemy.height >= canvas.height - baseHeight) {
-                    // Determine section (10 sections)
-                    let sectionWidth = (canvas.width - 20) / 10;
-                    let gap = 10;
-                    let section = Math.floor((enemy.x + enemy.width / 2) / ((canvas.width - 20 + gap) / 10));
-                    section = Math.min(section, 9); // Ensure not out of bounds
+                if (enemy.y + enemy.height >= canvas.height - BASE_HEIGHT) {
+                    // Use sectionWidth for correct section mapping
+                    let section = Math.floor((enemy.x + enemy.width / 2) / sectionWidth);
+                    section = Math.max(0, Math.min(section, BASE_SECTIONS - 1));
                     if (baseHealth[section] > 0) {
                         baseHealth[section]--;
                     } else {
-                        // Shield broken in this section, game over
                         gameOver = true;
                     }
-                    enemies.splice(index, 1);
-                } else if (enemy.y > canvas.height) {
-                    enemies.splice(index, 1);
+                    return false;
                 }
+                return enemy.y <= canvas.height;
             });
         }
 
         function checkCollisions() {
+            // Track indices to remove to avoid mutating arrays during iteration
+            const hitBullets = new Set();
+            const hitEnemies = new Set();
+
             bullets.forEach((bullet, bIndex) => {
                 enemies.forEach((enemy, eIndex) => {
-                    if (bullet.x < enemy.x + enemy.width &&
+                    if (!hitBullets.has(bIndex) && !hitEnemies.has(eIndex) &&
+                        bullet.x < enemy.x + enemy.width &&
                         bullet.x + bullet.width > enemy.x &&
                         bullet.y < enemy.y + enemy.height &&
                         bullet.y + bullet.height > enemy.y) {
-                        bullets.splice(bIndex, 1);
-                        enemies.splice(eIndex, 1);
-                        score += 10;
+                        hitBullets.add(bIndex);
+                        hitEnemies.add(eIndex);
+                        score += SCORE_PER_KILL;
                         scoreElement.textContent = score;
                     }
                 });
             });
+
+            bullets = bullets.filter((_, i) => !hitBullets.has(i));
+            enemies = enemies.filter((_, i) => !hitEnemies.has(i));
         }
 
         function spawnEnemies() {
-            let spawnRate = 0.02 + score * 0.0001; // Increase spawn rate with score
-            spawnRate = Math.min(spawnRate, 0.1); // Cap at 0.1
+            let spawnRate = Math.min(BASE_SPAWN_RATE + score * SPAWN_RATE_SCALE, MAX_SPAWN_RATE);
             if (Math.random() < spawnRate) {
                 enemies.push({
                     x: Math.random() * (canvas.width - 50),
@@ -219,7 +255,7 @@
         }
 
         function shoot() {
-            if ((isShooting || keys['Space']) && Date.now() - lastShot > shootCooldown) {
+            if ((isShooting || keys['Space']) && Date.now() - lastShot > SHOOT_COOLDOWN) {
                 bullets.push({
                     x: player.x + player.width / 2 - 2.5,
                     y: player.y,
@@ -227,7 +263,7 @@
                     height: 10
                 });
                 lastShot = Date.now();
-                // For keyboard, prevent continuous shooting
+                // For keyboard, prevent continuous shooting on a single press
                 if (keys['Space']) {
                     keys['Space'] = false;
                 }
@@ -260,7 +296,7 @@
             drawEnemies();
             drawBase();
 
-            requestAnimationFrame(gameLoop);
+            animationFrameId = requestAnimationFrame(gameLoop);
         }
 
         gameLoop();
