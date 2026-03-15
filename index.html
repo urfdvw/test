@@ -22,6 +22,10 @@
             border: 2px solid #fff;
             background: #000;
             touch-action: none;
+            max-width: 100%;
+            height: auto;
+            aspect-ratio: 4 / 3;
+            display: block;
         }
         .score {
             color: #fff;
@@ -52,18 +56,46 @@
         let lastShot = 0;
         let shootCooldown = 200; // milliseconds
         let baseHeight = 30;
-        let baseHealth = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]; // health for 10 sections
+        const BASE_SECTIONS = 10;
+        const BASE_TOTAL_GAP = 10;
+        const baseGap = BASE_SECTIONS > 1 ? BASE_TOTAL_GAP / (BASE_SECTIONS - 1) : 0;
+        let baseHealth = Array(BASE_SECTIONS).fill(1);
         let baseAnimation = 0; // for animation
+        let animationFrameId = null;
+
+        function getBaseSectionWidth() {
+            return (canvas.width - BASE_TOTAL_GAP) / BASE_SECTIONS;
+        }
+
+        function getBaseSectionX(sectionIndex) {
+            return sectionIndex * (getBaseSectionWidth() + baseGap);
+        }
+
+        function getBaseSectionFromX(x) {
+            const sectionStride = getBaseSectionWidth() + baseGap;
+            const clampedX = Math.max(0, Math.min(x, canvas.width - 1));
+            return Math.min(BASE_SECTIONS - 1, Math.floor(clampedX / sectionStride));
+        }
+
+        function getTouchCanvasX(touch) {
+            const rect = canvas.getBoundingClientRect();
+            const normalizedX = (touch.clientX - rect.left) / rect.width;
+            return normalizedX * canvas.width;
+        }
 
         // Restart function
         function restartGame() {
+            if (animationFrameId !== null) {
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = null;
+            }
             player.x = canvas.width / 2 - 25;
             bullets = [];
             enemies = [];
             score = 0;
             scoreElement.textContent = score;
             gameOver = false;
-            baseHealth = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+            baseHealth = Array(BASE_SECTIONS).fill(1);
             restartBtn.style.display = 'none';
             gameLoop();
         }
@@ -72,6 +104,9 @@
 
         // Event listeners
         document.addEventListener('keydown', (e) => {
+            if (e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'Space') {
+                e.preventDefault();
+            }
             keys[e.code] = true;
         });
         document.addEventListener('keyup', (e) => {
@@ -81,27 +116,25 @@
         // Touch events on canvas
         canvas.addEventListener('touchstart', (e) => {
             e.preventDefault();
-            let rect = canvas.getBoundingClientRect();
-            let touchX = e.touches[0].clientX - rect.left;
+            let touchX = getTouchCanvasX(e.touches[0]);
             player.x = touchX - player.width / 2;
             if (player.x < 0) player.x = 0;
             if (player.x > canvas.width - player.width) player.x = canvas.width - player.width;
             isShooting = true;
-        });
+        }, { passive: false });
 
         canvas.addEventListener('touchmove', (e) => {
             e.preventDefault();
-            let rect = canvas.getBoundingClientRect();
-            let touchX = e.touches[0].clientX - rect.left;
+            let touchX = getTouchCanvasX(e.touches[0]);
             player.x = touchX - player.width / 2;
             if (player.x < 0) player.x = 0;
             if (player.x > canvas.width - player.width) player.x = canvas.width - player.width;
-        });
+        }, { passive: false });
 
         canvas.addEventListener('touchend', (e) => {
             e.preventDefault();
             isShooting = false;
-        });
+        }, { passive: false });
 
         // Game functions
         function drawPlayer() {
@@ -125,11 +158,10 @@
 
         function drawBase() {
             let baseY = canvas.height - baseHeight;
-            let sectionWidth = (canvas.width - 20) / 10; // 10 pixel gaps total for 10 sections
-            let gap = 10;
+            let sectionWidth = getBaseSectionWidth();
             ctx.fillStyle = '#0f0';
-            for (let s = 0; s < 10; s++) {
-                let sectionX = s * (sectionWidth + gap / 9) + (s > 0 ? gap / 9 : 0); // Adjust gap distribution
+            for (let s = 0; s < BASE_SECTIONS; s++) {
+                let sectionX = getBaseSectionX(s);
                 if (baseHealth[s] > 0) {
                     ctx.fillRect(sectionX, baseY, sectionWidth, baseHeight);
                 }
@@ -138,8 +170,8 @@
             baseAnimation++;
             if (baseAnimation % 20 < 10 && baseHealth.some(h => h > 0)) {
                 ctx.fillStyle = '#fff';
-                for (let s = 0; s < 10; s++) {
-                    let sectionX = s * (sectionWidth + gap / 9) + (s > 0 ? gap / 9 : 0);
+                for (let s = 0; s < BASE_SECTIONS; s++) {
+                    let sectionX = getBaseSectionX(s);
                     if (baseHealth[s] > 0) {
                         ctx.fillRect(sectionX, baseY, sectionWidth, 2);
                     }
@@ -157,25 +189,23 @@
         }
 
         function updateBullets() {
-            bullets.forEach((bullet, index) => {
+            for (let index = bullets.length - 1; index >= 0; index--) {
+                const bullet = bullets[index];
                 bullet.y -= 5;
                 if (bullet.y < 0) {
                     bullets.splice(index, 1);
                 }
-            });
+            }
         }
 
         function updateEnemies() {
             let enemySpeed = 2 + score * 0.005; // Increase speed with score
             enemySpeed = Math.min(enemySpeed, 5); // Cap at 5
-            enemies.forEach((enemy, index) => {
+            for (let index = enemies.length - 1; index >= 0; index--) {
+                const enemy = enemies[index];
                 enemy.y += enemySpeed;
                 if (enemy.y + enemy.height >= canvas.height - baseHeight) {
-                    // Determine section (10 sections)
-                    let sectionWidth = (canvas.width - 20) / 10;
-                    let gap = 10;
-                    let section = Math.floor((enemy.x + enemy.width / 2) / ((canvas.width - 20 + gap) / 10));
-                    section = Math.min(section, 9); // Ensure not out of bounds
+                    let section = getBaseSectionFromX(enemy.x + enemy.width / 2);
                     if (baseHealth[section] > 0) {
                         baseHealth[section]--;
                     } else {
@@ -186,12 +216,14 @@
                 } else if (enemy.y > canvas.height) {
                     enemies.splice(index, 1);
                 }
-            });
+            }
         }
 
         function checkCollisions() {
-            bullets.forEach((bullet, bIndex) => {
-                enemies.forEach((enemy, eIndex) => {
+            for (let bIndex = bullets.length - 1; bIndex >= 0; bIndex--) {
+                const bullet = bullets[bIndex];
+                for (let eIndex = enemies.length - 1; eIndex >= 0; eIndex--) {
+                    const enemy = enemies[eIndex];
                     if (bullet.x < enemy.x + enemy.width &&
                         bullet.x + bullet.width > enemy.x &&
                         bullet.y < enemy.y + enemy.height &&
@@ -200,9 +232,10 @@
                         enemies.splice(eIndex, 1);
                         score += 10;
                         scoreElement.textContent = score;
+                        break;
                     }
-                });
-            });
+                }
+            }
         }
 
         function spawnEnemies() {
@@ -243,6 +276,7 @@
                 ctx.font = '24px Arial';
                 ctx.fillText('Score: ' + score, canvas.width / 2, canvas.height / 2 + 50);
                 restartBtn.style.display = 'block';
+                animationFrameId = null;
                 return;
             }
 
@@ -260,7 +294,7 @@
             drawEnemies();
             drawBase();
 
-            requestAnimationFrame(gameLoop);
+            animationFrameId = requestAnimationFrame(gameLoop);
         }
 
         gameLoop();
